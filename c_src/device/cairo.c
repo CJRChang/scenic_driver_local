@@ -137,8 +137,8 @@ int device_init(const device_opts_t* p_opts,
     set332map(g_cairo_fb.fd);
   }
 
-  p_info->width = g_cairo_fb.var.xres;
-  p_info->height = g_cairo_fb.var.yres;
+  p_info->width = p_opts->width;
+  p_info->height = p_opts->height;
 
   p_ctx->font_size = 10.0; // Cairo default
   p_ctx->text_align = TEXT_ALIGN_LEFT;
@@ -308,10 +308,24 @@ void render_cairo_surface_to_fb(scenic_cairo_ctx_t* p_ctx)
     break;
   }
 
-  uint32_t yc = g_cairo_fb.var.yres_virtual;
-  uint32_t xc = g_cairo_fb.var.xres_virtual;
-  size_t x_stride = (g_cairo_fb.fix.line_length * 8) / g_cairo_fb.var.bits_per_pixel;
-  size_t fb_size = x_stride * yc * cpp;
+  uint32_t x_stride = (g_cairo_fb.fix.line_length * 8) / g_cairo_fb.var.bits_per_pixel;
+
+  uint32_t pic_xs = g_device_info.width;
+  uint32_t pic_ys = g_device_info.height;
+  uint32_t scr_xs = x_stride;
+  uint32_t scr_ys = g_cairo_fb.var.yres;
+
+  uint32_t xc = (pic_xs > scr_xs) ? scr_xs : pic_xs;
+  uint32_t yc = (pic_ys > scr_ys) ? scr_ys : pic_ys;
+
+  uint32_t x_offs = (pic_xs < g_cairo_fb.var.xres)
+                    ? (g_cairo_fb.var.xres - pic_xs) / 2
+                    : 0;
+  uint32_t y_offs = (pic_ys < g_cairo_fb.var.yres)
+                    ? (g_cairo_fb.var.yres - pic_ys) / 2
+                    : 0;
+
+  size_t fb_size = scr_xs * scr_ys * cpp;
   uint8_t* fb = mmap(NULL, fb_size, PROT_WRITE | PROT_READ, MAP_SHARED, g_cairo_fb.fd, 0);
 
   if (fb == MAP_FAILED) {
@@ -319,10 +333,10 @@ void render_cairo_surface_to_fb(scenic_cairo_ctx_t* p_ctx)
     return;
   }
 
-  uint8_t* p_fb = fb;
+  uint8_t* p_fb = fb + (y_offs * scr_xs + x_offs) * cpp;
   uint8_t* p_image = p_ctx->fbbuff.c;
 
-  for (uint32_t i = 0; i < yc; i++, p_fb += x_stride * cpp, p_image += xc * cpp)
+  for (uint32_t i = 0; i < yc; i++, p_fb += scr_xs * cpp, p_image += pic_xs * cpp)
     memcpy(p_fb, p_image, xc * cpp);
 
   munmap(fb, fb_size);
