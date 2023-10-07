@@ -114,6 +114,9 @@ int device_init(const device_opts_t* p_opts,
   size_t pix_count = p_opts->width * p_opts->height;
   switch (g_cairo_fb.var.bits_per_pixel)
   {
+  case 1:
+    p_ctx->fbbuff.c = (uint8_t*)malloc(pix_count * sizeof(bool));
+    break;
   case 8:
     p_ctx->fbbuff.c = (uint8_t*)malloc(pix_count * sizeof(uint8_t));
     break;
@@ -206,6 +209,11 @@ void device_begin_cursor_render(driver_data_t* p_data)
   cairo_translate(p_ctx->cr, p_data->cursor_pos[0], p_data->cursor_pos[1]);
 }
 
+inline static uint8_t to_1_color(uint8_t r, uint8_t g, uint8_t b)
+{
+    return ((r | g | b) > 0 ? 1 : 0);
+}
+
 inline static uint8_t to_8_color(uint8_t r, uint8_t g, uint8_t b)
 {
     return ((((r >> 5) & 7) << 5) |
@@ -252,6 +260,18 @@ void render_cairo_surface_to_fb(scenic_cairo_ctx_t* p_ctx)
   int cpp = 0;
   switch (g_cairo_fb.var.bits_per_pixel)
   {
+  case 1:
+    for (uint32_t i = 0, j = 0; i < (pix_count / 8); i++) {
+      p_ctx->fbbuff.c[i] = 0;
+      for (uint8_t k = 0; k < 8; k++) {
+        p_ctx->fbbuff.c[i] = p_ctx->fbbuff.c[i] |
+        (to_1_color(cairo_buff[j+2],
+                    cairo_buff[j+1],
+                    cairo_buff[j+0]) << k);
+        j+= 4;
+      }
+    }
+    break;
   case 8:
     cpp = 1;
     for (uint32_t i = 0, j = 0; i < pix_count; i++, j += 4) {
@@ -327,21 +347,40 @@ void render_cairo_surface_to_fb(scenic_cairo_ctx_t* p_ctx)
                     ? (g_cairo_fb.var.yres - pic_ys) / 2
                     : 0;
 
-  size_t fb_size = scr_xs * scr_ys * cpp;
-  uint8_t* fb = mmap(NULL, fb_size, PROT_WRITE | PROT_READ, MAP_SHARED, g_cairo_fb.fd, 0);
+  if (g_cairo_fb.var.bits_per_pixel < 8) {
+    uint8_t divisor = 8 / g_cairo_fb.var.bits_per_pixel;
+    size_t fb_size = (scr_xs * scr_ys) / divisor;
+    uint8_t* fb = mmap(NULL, fb_size, PROT_WRITE | PROT_READ, MAP_SHARED, g_cairo_fb.fd, 0);
 
-  if (fb == MAP_FAILED) {
-    log_error("cairo: failed to mmap fb");
-    return;
+    if (fb == MAP_FAILED) {
+      log_error("cairo: failed to mmap fb");
+        return;
+    }
+
+    uint8_t* p_fb = fb + ((y_offs * scr_xs + x_offs) / divisor);
+    uint8_t* p_image = p_ctx->fbbuff.c;
+
+    for (uint32_t i = 0; i < yc; i++, p_fb += scr_xs / divisor, p_image += pic_xs / divisor)
+        memcpy(p_fb, p_image, xc / divisor);
+
+    munmap(fb, fb_size);
+  } else {
+    size_t fb_size = scr_xs * scr_ys * cpp;
+    uint8_t* fb = mmap(NULL, fb_size, PROT_WRITE | PROT_READ, MAP_SHARED, g_cairo_fb.fd, 0);
+
+    if (fb == MAP_FAILED) {
+      log_error("cairo: failed to mmap fb");
+        return;
+    }
+
+    uint8_t* p_fb = fb + (y_offs * scr_xs + x_offs) * cpp;
+    uint8_t* p_image = p_ctx->fbbuff.c;
+
+    for (uint32_t i = 0; i < yc; i++, p_fb += scr_xs * cpp, p_image += pic_xs * cpp)
+      memcpy(p_fb, p_image, xc * cpp);
+
+    munmap(fb, fb_size);
   }
-
-  uint8_t* p_fb = fb + (y_offs * scr_xs + x_offs) * cpp;
-  uint8_t* p_image = p_ctx->fbbuff.c;
-
-  for (uint32_t i = 0; i < yc; i++, p_fb += scr_xs * cpp, p_image += pic_xs * cpp)
-    memcpy(p_fb, p_image, xc * cpp);
-
-  munmap(fb, fb_size);
 }
 
 void device_end_render(driver_data_t* p_data)
